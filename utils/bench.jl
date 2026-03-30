@@ -2,6 +2,7 @@ using BenchmarkTools
 using Random
 include("../kernel.jl")
 Random.seed!(1234)
+const T = Float32
 
 function setup_benchmark(n_points=1_000_000, n_dipoles=50_000)
     # Generate test data on host

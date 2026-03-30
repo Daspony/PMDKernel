@@ -16,7 +16,7 @@ function kernel_fused_B!(R, P, M, B, n, m)
         Ry = R[i, 2]
         Rz = R[i, 3]
     end
-
+    
     jb = 1
     while jb <= m
         batch_size = min(BATCH_M, m - jb + 1)

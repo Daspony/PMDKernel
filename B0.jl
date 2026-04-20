@@ -80,7 +80,9 @@ function B0(viz::Bool, threads = 256;data_path = joinpath(@__DIR__, "data", "B0.
             display(fig)
         end
 
-        npzwrite("B_field.npz", Dict(
+        out_dir = joinpath(@__DIR__, "data", "simulaciones")
+        mkpath(out_dir)
+        npzwrite(joinpath(out_dir, "B_field.npz"), Dict(
             "Bx" => reshape(B_res[1,:] .* 1000f0, Nx, Ny, Nz),
             "By" => reshape(B_res[2,:] .* 1000f0, Nx, Ny, Nz),
             "Bz" => reshape(B_res[3,:] .* 1000f0, Nx, Ny, Nz),

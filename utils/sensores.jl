@@ -16,7 +16,7 @@ ejecutando el kernel GPU directamente sobre esos puntos.
 Acepta cualquier archivo .npz con el formato de B0.npz (array1..array4), lo que
 permite calcular el campo de configuraciones perturbadas generadas por perturb.jl.
 
-Guarda `data/Bsensores.csv` con columnas: x_mm, y_mm, z_mm, Bx_mT, By_mT, Bz_mT.
+Guarda `data/simulaciones/Bsensores.npz` con arrays: x_mm, y_mm, z_mm, Bx_mT, By_mT, Bz_mT.
 
 Parámetros
 ----------
@@ -60,8 +60,8 @@ function sensores(threads::Int = 256;
     for i in 1:n
         radio = coordenadas[i, 1]
         theta = coordenadas[i, 2]
-        R_cpu[i, 1] = radio * cosd(theta) * 10f0    # x = r*cos(sigma), sigma=0° → +X (RAS)
-        R_cpu[i, 2] = radio * sind(theta) * 10f0    # y = r*sin(sigma), sigma=90° → +Y (RAS)
+        R_cpu[i, 1] = radio * -sind(theta) * 10f0    # x = r*sin(sigma), sigma=0° → +0, +Y (RAS) , sigma=90° → -X,0 (RAS)
+        R_cpu[i, 2] = radio * cosd(theta) * 10f0    # y = r*cos(sigma)
         R_cpu[i, 3] = (coordenadas[i, 3] - 22f0) * 10f0
     end
 
@@ -78,14 +78,18 @@ function sensores(threads::Int = 256;
 
     B_res = Array(B')   # [3 × n]
 
-    # Salida 
-    out_path = joinpath(@__DIR__, "..", "data", "Bsensores.csv")
-    open(out_path, "w") do io
-        writedlm(io, ["x_mm" "y_mm" "z_mm" "Bx_mT" "By_mT" "Bz_mT"], ',')
-        for i in axes(B_res, 2)
-            writedlm(io, [R_cpu[i,1]  R_cpu[i,2]  R_cpu[i,3] B_res[1,i]*1000  B_res[2,i]*1000  B_res[3,i]*1000], ',')
-        end
-    end
+    # Salida
+    out_dir = joinpath(@__DIR__, "..", "data", "simulaciones")
+    mkpath(out_dir)
+    out_path = joinpath(out_dir, "Bsensores.npz")
+    npzwrite(out_path, Dict(
+        "x_mm"  => R_cpu[:, 1],
+        "y_mm"  => R_cpu[:, 2],
+        "z_mm" => R_cpu[:, 3],
+        "Bx_mT" => B_res[1, :] .* 1000f0,
+        "By_mT" => B_res[2, :] .* 1000f0,
+        "Bz_mT" => B_res[3, :] .* 1000f0,
+    ))
 
-    println("Bsensores.csv guardado en: ", out_path)
+    println("Bsensores.npz guardado en: ", out_path)
 end

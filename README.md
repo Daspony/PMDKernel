@@ -13,8 +13,8 @@ As an application, `B0.jl` provides a full simulation of the magnetic field $B_0
 | `B0.jl`                    | Entry point: grilla 3D completa del resonador + (opcional) sensores |
 | `kernel.jl`                | Kernel CUDA (Biot-Savart, tiling en memoria compartida)             |
 | `utils/sensores.jl`        | Evalúa el campo en todos los sensores del CSV                       |
-| `utils/disco.jl`           | Genera datasets tipo "disco" para entrenamiento de ML               |
-| `utils/perturb.jl`         | Genera configuraciones perturbadas (rotación, magnitud, ambas)      |
+| `utils/disco.jl`           | `simular_disco` (pura) + `simular_disco_batch` (N muestras → NPZ)   |
+| `utils/perturb.jl`         | `perturb` (rotación / magnitud / both) + `perturb_batch` (N seeds)  |
 | `utils/bench.jl`           | Benchmark del kernel                                                |
 | `utils/gru.jl`             | Visualización 3D (slicer ortogonal)                                 |
 | `data/B0.npz`              | Geometría nominal de imanes                                         |
@@ -45,32 +45,55 @@ Para entrenar un modelo de ML sin tener que simular el volumen completo en una
 tanda, dividimos el resonador en **discos**: losas delgadas (1 mm de grosor)
 perpendiculares al eje Z. Cada disco produce un par:
 
-- **entrada** → campo B en los sensores que caen dentro del disco
-- **salida**  → campo B en una grilla X-Y reducida (paso 20 mm) a la misma Z
+- **entrada** → campo B en una grilla X-Y dentro del resonador a la Z elegida
+- **salida**  → campo B en los sensores cuya Z cae dentro del disco
 
-Esto reduce drásticamente el cómputo por muestra y permite barrer capas Z y
-configuraciones perturbadas para armar el dataset.
+El pipeline tiene dos pasos: `perturb` genera NPZ de imanes perturbados y
+`simular_disco` corre el kernel sobre ellos. Los NPZ guardan los momentos **ya
+escalados** por los factores nominales; `simular_disco` los lee tal cual.
 
-### Función principal: `simular_disco(z_mm; ...)`
+### Paso a paso
 
-El primer argumento es la **coordenada Z** (en mm) donde se centra el disco.
-La función:
+**1. Abrir la REPL de Julia en la raíz del repo** 
 
-1. Construye la grilla X-Y en esa Z (default: `-60:20:60` mm, 7×7 puntos).
-2. Filtra los sensores cuya Z caiga dentro del disco (`|z_sensor − z_mm| ≤ 0.5`).
-3. Corre el kernel sobre ambos conjuntos y guarda todo en un NPZ en
-   `data/simulaciones/`.
+```bash
+julia --project=.
+```
 
-### Ejemplo mínimo
+**2. Definir las constantes requeridas por el kernel** (`BATCH_M` = dipolos por
+tile de shared memory, `T` = dtype). Deben existir en el scope *antes* de
+incluir `kernel.jl`:
 
 ```julia
-include("B0.jl")             # carga kernel, BATCH_M, T
-include("utils/disco.jl")
-
-# Disco en z = 0 mm (capa central del resonador, depth = 22 cm en sensores)
-simular_disco(0f0; xy_step=20f0)
-# → data/simulaciones/disco_z0.0.npz
+const BATCH_M = 64
+const T       = Float32
 ```
+
+**3. Incluir el kernel y las utilidades** del pipeline de discos:
+
+```julia
+include("PMDKernel/kernel.jl")
+include("PMDKernel/utils/perturb.jl")
+include("PMDKernel/utils/disco.jl")
+```
+
+**4. Generar N sets de imanes perturbados** (seeds `1..N` por default). Cada
+set se guarda como NPZ en `PMDKernel/data/perturbed/`:
+
+```julia
+paths = perturb_batch(5000; kind=:both, sigma_deg=1f0)
+```
+
+**5. Correr el kernel sobre los N sets** para el disco en la Z elegida. Se
+apilan las muestras y se escribe un único NPZ consolidado:
+
+```julia
+simular_disco_batch(0f0, paths;
+    out_path="PMDKernel/data/simulaciones/disco_z0_both_n5000.npz")
+```
+
+> `simular_disco` (sin `_batch`) es pura: corre una sola muestra y devuelve un
+> `NamedTuple` con los arrays sin escribir nada.
 
 ### Capas Z de los sensores
 
@@ -85,78 +108,56 @@ Con el CSV actual (`coordenadas_sensores.csv`), los sensores se agrupan en
 | 28.4       |  +64   | 36                   |
 | 34.8       | +128   | 36                   |
 
-Para barrer las 5 capas con la configuración nominal:
+### Estructura del NPZ consolidado
 
-```julia
-for z in (-128f0, -64f0, 0f0, 64f0, 128f0)
-    simular_disco(z; xy_step=20f0, out_name="disco_nominal_z$(Int(z))")
-end
-```
+Formato mínimo: solo los tensores que consume la red (`B_grid`, `B_sens`) y los
+metadatos cuya reconstrucción en Python requeriría releer `coordenadas_sensores.csv`
+(`sens_xyz`, `z_disco`).
 
-### Estructura del NPZ generado
+| Clave      | Forma           | dtype   | Unidades | Descripción                                  |
+|------------|-----------------|---------|----------|----------------------------------------------|
+| `B_grid`   | (N, Nx, Ny, 3)  | float32 | mT       | Campo en la grilla XY (canales Bx, By, Bz)   |
+| `B_sens`   | (N, K, 3)       | float32 | mT       | Campo en los K sensores del plano            |
+| `sens_xyz` | (K, 3)          | float32 | mm       | Posiciones cartesianas de los sensores       |
+| `z_disco`  | escalar         | float32 | mm       | Plano z del disco                            |
 
-| Array            | Forma   | Unidades | Descripción                            |
-|------------------|---------|----------|----------------------------------------|
-| `z_disco_mm`     | (1,)    | mm       | Z del disco                            |
-| `thickness_mm`   | (1,)    | mm       | Grosor del disco (default 1)           |
-| `grid_x_mm`      | (Nx,Ny) | mm       | Coordenada X de cada nodo              |
-| `grid_y_mm`      | (Nx,Ny) | mm       | Coordenada Y                           |
-| `grid_Bx_mT`     | (Nx,Ny) | mT       | Componente X del campo en la grilla    |
-| `grid_By_mT`     | (Nx,Ny) | mT       | Componente Y                           |
-| `grid_Bz_mT`     | (Nx,Ny) | mT       | Componente Z                           |
-| `sensor_idx`     | (k,)    | —        | Índices 1-based (fila del CSV) de los sensores del disco |
-| `sensor_x_mm`    | (k,)    | mm       | Posición X del sensor                  |
-| `sensor_y_mm`    | (k,)    | mm       | Posición Y                             |
-| `sensor_z_mm`    | (k,)    | mm       | Posición Z                             |
-| `sensor_Bx_mT`   | (k,)    | mT       | Campo X medido en el sensor            |
-| `sensor_By_mT`   | (k,)    | mT       | Campo Y                                |
-| `sensor_Bz_mT`   | (k,)    | mT       | Campo Z                                |
+La grilla XY se reconstruye en el consumidor con `xy_step` y `grid_range` (el
+notebook expone `XY_STEP`, `XY_MIN`, `XY_MAX` en su celda de config y valida vía
+`assert` que la shape resultante coincide con `B_grid`). No se persisten `grid_xy`,
+`sens_idx` ni `seeds`: los dos primeros son reconstruibles sin CSV y el último
+queda implícito en los filenames de los NPZ de imanes (`B0_*_seed{N}.npz`).
 
-Con `xy_step=20` y `grid_range=(-60,60)` → `Nx=Ny=7` (49 puntos). Con el CSV
-actual, cada capa contiene `k = 36` sensores (36 ángulos × 1 profundidad).
+Con `xy_step=10` y `grid_range=(-150, 150)` → `Nx=Ny=31` (961 puntos). Con el
+CSV actual, cada capa contiene `K = 36` sensores.
 
-### Pipeline para un dataset completo
+### Parámetros
 
-Combina `perturb_*` con `simular_disco` para generar muchas muestras con
-configuraciones perturbadas de los imanes:
+**`perturb` / `perturb_batch`**
 
-```julia
-include("B0.jl")
-include("utils/disco.jl")
-include("utils/perturb.jl")
+| Parámetro     | Default          | Descripción                                            |
+|---------------|------------------|--------------------------------------------------------|
+| `n`           | requerido        | Nº de muestras (solo `perturb_batch`)                  |
+| `kind`        | `:both`          | `:rotation`, `:magnitude` o `:both`                    |
+| `sigma_deg`   | `1f0`            | σ angular (grados) de la rotación XY                   |
+| `mu1,sigma1`  | `2.035 ± 0.1`    | Media/σ de la magnitud del array2 (1936 imanes)        |
+| `mu2,sigma2`  | `3.051 ± 0.3`    | Media/σ de la magnitud del array4 (384 imanes)         |
+| `seed`        | aleatorio        | Semilla RNG (`perturb`)                                |
+| `seed_base`   | `0`              | Seeds usadas: `seed_base+1 … seed_base+n` (`_batch`)   |
+| `out_path`    | requerido        | Ruta del NPZ (solo `perturb`)                          |
+| `out_dir`     | `data/perturbed` | Carpeta de salida (solo `perturb_batch`)               |
+| `name_prefix` | `"B0"`           | Prefijo del filename: `<prefix>_<kind>_seed<i>.npz`    |
 
-N_MUESTRAS = 100
-capas_z    = (-128f0, -64f0, 0f0, 64f0, 128f0)
+**`simular_disco` / `simular_disco_batch`**
 
-for seed in 1:N_MUESTRAS
-    # 1. Genera una configuración perturbada (rotación de imanes σ = 1°)
-    p = perturb_rotation(sigma_deg=1f0, seed=seed,
-                         out_path="data/rot_seed$(seed).npz")
-
-    # 2. Evalúa las 5 capas sobre esa configuración
-    for z in capas_z
-        simular_disco(z; xy_step=20f0,
-                      data_path=p,
-                      out_name="disco_seed$(seed)_z$(Int(z))")
-    end
-end
-```
-
-Esto genera `N_MUESTRAS × 5 = 500` archivos en `data/simulaciones/`, cada uno
-un par (sensores → grilla) listo para entrenamiento. Otras variantes:
-`perturb_magnitude`, `perturb_both` (ver `utils/perturb.jl`).
-
-### Parámetros de `simular_disco`
-
-| Parámetro    | Default         | Descripción                                   |
-|--------------|-----------------|-----------------------------------------------|
-| `z_mm`       | —               | Z del disco (mm, requerido)                   |
-| `xy_step`    | `20`            | Paso de la grilla en X e Y (mm)               |
-| `grid_range` | `(-60, 60)`     | Rango X-Y de la grilla (mm)                   |
-| `thickness`  | `1`             | Grosor del disco en Z (mm)                    |
-| `threads`    | `256`           | Hilos CUDA por bloque                         |
-| `data_path`  | `data/B0.npz`   | NPZ de imanes (cámbialo para perturbados)     |
-| `out_name`   | `"disco_z<z>"`  | Nombre del archivo de salida (sin extensión)  |
+| Parámetro    | Default       | Descripción                                        |
+|--------------|---------------|----------------------------------------------------|
+| `z_mm`       | requerido     | Z del disco (mm)                                   |
+| `xy_step`    | `10`          | Paso de la grilla en X e Y (mm)                    |
+| `grid_range` | `(-150, 150)` | Rango X-Y de la grilla (mm)                        |
+| `thickness`  | `1`           | Grosor del disco en Z (mm)                         |
+| `threads`    | `256`         | Hilos CUDA por bloque                              |
+| `data_path`  | requerido     | NPZ de imanes (solo `simular_disco`)               |
+| `out_path`   | requerido     | Ruta del NPZ consolidado (solo `_batch`)           |
 
 ---
 

@@ -1,6 +1,11 @@
 using CUDA
 using LinearAlgebra
 
+# Magnitud máxima de B por punto (Tesla). En puntos muy cerca de un imán el
+# modelo dipolar diverge (1/r³); el clamp limita a |B| = B_MAX_T preservando
+# dirección. 60 mT = 0.06 T.
+const B_MAX_T = 0.06f0
+
 function kernel_fused_B!(R, P, M, B, n, m)
     i = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     
@@ -77,6 +82,11 @@ function kernel_fused_B!(R, P, M, B, n, m)
     end
 
     if i <= n
+        mag2 = Bx*Bx + By*By + Bz*Bz
+        if mag2 > B_MAX_T * B_MAX_T
+            s = B_MAX_T / sqrt(mag2)
+            Bx *= s; By *= s; Bz *= s
+        end
         B[i, 1], B[i, 2], B[i, 3] = Bx, By, Bz
     end
     return

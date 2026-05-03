@@ -1,5 +1,26 @@
 using GLMakie, Printf
 
+"""
+    mostrar_grilla(B, grid_range; zoom=3)
+
+Visualiza el campo computado por `B0(R, P, M)` con un Slicer3D ortogonal.
+
+Asume que `R` se construyó con `construir_R(coords=:cartesian, x=grid_range, y=grid_range, z=grid_range)`,
+es decir una grilla cúbica con el mismo `grid_range` en los tres ejes.
+
+`B` es la matriz `[n, 3]` que devuelve `B0` (Tesla). Toma la componente By,
+la pasa a mT y muestra (con signo invertido para el colormap).
+"""
+function mostrar_grilla(B::AbstractMatrix, grid_range::AbstractRange; zoom::Int = 3)
+    Nx = length(grid_range); Ny = Nx; Nz = Nx
+    @assert size(B, 1) == Nx*Ny*Nz "mostrar_grilla: tamaño de B inconsistente con grid_range"
+    By = reshape(B[:, 2] .* -1000f0, Nx, Ny, Nz)   # mT, signo invertido para colormap
+    fig = Figure(size=(600, 600))
+    Slicer3D(fig, By, zoom=zoom)
+    display(fig)
+    return fig
+end
+
 function Slicer3D(fig,data;
                         colormap=:viridis,colorrange=nothing,
                         zoom::Int=1,

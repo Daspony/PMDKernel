@@ -2,9 +2,7 @@ using NPZ
 using Distributions
 using Random
 
-# Factores nominales aplicados a los vectores raw de B0.npz
-const NOMINAL_SCALE_1 = 2.035f0   # para array2 (1936 imanes)
-const NOMINAL_SCALE_2 = 3.051f0   # para array4 (384 imanes)
+isdefined(@__MODULE__, :NOMINAL_SCALE_1) || include("calibracion.jl")
 
 # --- Helpers internos ---
 
@@ -30,28 +28,27 @@ function sample_scales(rng, mu::Float32, sigma::Float32, m::Int)::Vector{Float32
 end
 
 """
-    perturb(; kind, sigma_deg, mu1, sigma1, mu2, sigma2, seed, out_path) -> String
+    perturb(; kind, sigma_deg, mu1, sigma1, mu2, sigma2, seed) -> (P, M)
 
-Genera un NPZ con los imanes perturbados (momentos ya escalados a unidades SI).
+Genera una configuración perturbada de imanes y la devuelve **en memoria**:
+- `P` :: Matrix{Float32} `[3, m]` posiciones (mm).
+- `M` :: Matrix{Float32} `[3, m]` momentos ya escalados (A·m²).
 
 Parámetros
 ----------
 - `kind`       : `:rotation` | `:magnitude` | `:both` (default)
 - `sigma_deg`  : desviación angular (grados) para la rotación XY (default = 1.0)
 - `mu1,sigma1` : media y sigma para la magnitud del array2 (default = 2.035 ± 0.1)
-- `mu2,sigma2` : media y sigma para la magnitud del array4 (default = 3.051 ± 0.3)
+- `mu2,sigma2` : media y sigma para la magnitud del array4 (default = 8.48 ± 0.85)
 - `seed`       : semilla RNG (default = nothing → aleatorio)
-- `out_path`   : ruta del NPZ de salida (requerido)
 
-Convención: los momentos guardados SIEMPRE están escalados — `simular_disco`
-los lee tal cual, sin re-escalar.
+No escribe archivos. El loop sobre N seeds vive en `generate_dataset`.
 """
 function perturb(; kind::Symbol     = :both,
         sigma_deg::Float32 = 1f0,
-        mu1::Float32 = 2.035f0, sigma1::Float32 = 0.1f0,
-        mu2::Float32 = 3.051f0, sigma2::Float32 = 0.3f0,
-        seed              = nothing,
-        out_path::String)
+        mu1::Float32 = NOMINAL_SCALE_1, sigma1::Float32 = 0.1f0,
+        mu2::Float32 = NOMINAL_SCALE_2, sigma2::Float32 = 0.85f0,
+        seed              = nothing)
 
     kind in (:rotation, :magnitude, :both) ||
         error("kind debe ser :rotation, :magnitude o :both; recibido $(kind)")
@@ -77,41 +74,7 @@ function perturb(; kind::Symbol     = :both,
         apply_rotation!(mom2, rng, dist)
     end
 
-    npzwrite(out_path, Dict("array1" => pos1, "array2" => mom1,
-                             "array3" => pos2, "array4" => mom2))
-    return out_path
-end
-
-"""
-    perturb_batch(n; kind, seed_base, out_dir, name_prefix, ...) -> Vector{String}
-
-Genera `n` NPZ perturbados con seeds `seed_base+1 .. seed_base+n`. Los paths
-quedan `<out_dir>/<name_prefix>_<kind>_seed<i>.npz`.
-
-Ejemplo
--------
-    paths = perturb_batch(10; kind=:both, sigma_deg=1f0)
-"""
-function perturb_batch(n::Int;
-        kind::Symbol        = :both,
-        seed_base::Int      = 0,
-        out_dir::String     = joinpath(@__DIR__, "..", "data", "perturbed"),
-        name_prefix::String = "B0",
-        sigma_deg::Float32  = 1f0,
-        mu1::Float32 = 2.035f0, sigma1::Float32 = 0.1f0,
-        mu2::Float32 = 3.051f0, sigma2::Float32 = 0.3f0)
-
-    mkpath(out_dir)
-    paths = String[]
-    for i in 1:n
-        seed = seed_base + i
-        out_path = joinpath(out_dir, "$(name_prefix)_$(kind)_seed$(seed).npz")
-        perturb(; kind=kind, sigma_deg=sigma_deg,
-                 mu1=mu1, sigma1=sigma1, mu2=mu2, sigma2=sigma2,
-                 seed=seed, out_path=out_path)
-        push!(paths, out_path)
-    end
-    println("perturb_batch: $(n) NPZ en $(out_dir) " *
-            "(kind=$(kind), seeds $(seed_base+1)..$(seed_base+n))")
-    return paths
+    P = hcat(pos1, pos2)
+    M = hcat(mom1, mom2)
+    return P, M
 end

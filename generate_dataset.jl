@@ -30,14 +30,19 @@ Genera **ambos** outputs (B_grid y B_sens) por muestra en el mismo HDF5,
 calculados sobre la misma config perturbada para garantizar consistencia
 input ↔ output. Datasets en mT.
 
+Convención de dimensiones (ver README):
+- N = nº de muestras (datasets)
+- I = nº de sensores             (índice i ∈ {1..I})
+- J = nº de puntos de grilla     (índice j ∈ {1..J}), J = Nx·Ny·Nz
+
 Layout del HDF5:
-- `B_grid` :: (N, n_grid, 3) Float32 — campo en cada punto de la grilla, mT.
+- `B_grid` :: (N, J, 3) Float32 — campo en cada punto de la grilla, mT.
               Si la grilla es un meshgrid regular, podés reshapearlo en el
               consumer (ej. NumPy: `B.reshape(N, Nx, Ny, Nz, 3)` con
               x-outer, z-inner).
-- `B_sens` :: (N, K, 3) Float32 — campo en sensores, mT.
-- `R_grid_xyz_mm` :: (n_grid, 3) — posiciones xyz mm de los puntos de grilla.
-- `sens_xyz_mm`   :: (K, 3)      — posiciones xyz mm de los sensores.
+- `B_sens` :: (N, I, 3) Float32 — campo en sensores, mT.
+- `R_grid_xyz_mm` :: (J, 3) — posiciones xyz mm de los puntos de grilla.
+- `sens_xyz_mm`   :: (I, 3) — posiciones xyz mm de los sensores.
 - `grid_<axis>`   :: 1D — uno por cada eje de `config.grid` (ej. grid_x, grid_y, grid_z;
                           o grid_r, grid_theta, grid_z para cilíndrico).
 - `attrs`         — coords del grid, params de perturb, timing summary.
@@ -53,20 +58,24 @@ function generate_dataset(config; verbose::Bool = false)
     R_sens = R_sensores()
     record!(timer, :setup_R, time_ns() - t0)
 
-    n_grid = size(R_grid, 1)
-    K      = size(R_sens, 1)
+    J = size(R_grid, 1)   # puntos de grilla (Nx·Ny·Nz aplanado)
+    I = size(R_sens, 1)   # sensores
 
+    # IMPORTANTE: HDF5.jl escribe arrays en column-major (vista Julia), entonces
+    # h5py los ve transpuestos. Para que Python lea naturalmente `(N, J, 3)`,
+    # declaramos las dims en Julia con orden inverso y escribimos transpuestos.
+    # Vista Julia `(3, J, N)` ⇔ vista Python `(N, J, 3)`. Idem para los R.
     h5open(out_path, "w") do f
         ds_grid = create_dataset(f, "B_grid", Float32,
-                                  ((config.n_samples, n_grid, 3),
-                                   (-1, n_grid, 3));
-                                  chunk = (1, n_grid, 3))
+                                  ((3, J, config.n_samples),
+                                   (3, J, -1));
+                                  chunk = (3, J, 1))
         ds_sens = create_dataset(f, "B_sens", Float32,
-                                  ((config.n_samples, K, 3),
-                                   (-1, K, 3));
-                                  chunk = (1, K, 3))
-        f["R_grid_xyz_mm"] = R_grid
-        f["sens_xyz_mm"]   = R_sens
+                                  ((3, I, config.n_samples),
+                                   (3, I, -1));
+                                  chunk = (3, I, 1))
+        f["R_grid_xyz_mm"] = permutedims(R_grid)   # (J,3) Julia → Python ve (J,3)
+        f["sens_xyz_mm"]   = permutedims(R_sens)   # (I,3) Julia → Python ve (I,3)
 
         # Guardar cada eje del grid como dataset separado (grid_x, grid_y, grid_z,
         # o grid_r, grid_theta, grid_z dependiendo del sistema)
@@ -92,16 +101,17 @@ function generate_dataset(config; verbose::Bool = false)
             record!(timer, :perturb, time_ns() - tp)
 
             tg = time_ns()
-            B_grid = B0(R_grid, P, M; timer = timer, prefix = :B0_grid)     # (n_grid, 3) Tesla
+            B_grid = B0(R_grid, P, M; timer = timer, prefix = :B0_grid)     # (J, 3) Tesla
             record!(timer, :B0_grid_total, time_ns() - tg)
 
             ts = time_ns()
-            B_sens = B0(R_sens, P, M; timer = timer, prefix = :B0_sens)     # (K, 3) Tesla
+            B_sens = B0(R_sens, P, M; timer = timer, prefix = :B0_sens)     # (I, 3) Tesla
             record!(timer, :B0_sens_total, time_ns() - ts)
 
             tw = time_ns()
-            ds_grid[i, :, :] = B_grid .* 1000f0   # mT
-            ds_sens[i, :, :] = B_sens .* 1000f0   # mT
+            # Transponer (J,3)→(3,J) e (I,3)→(3,I) para que Python lea (N,J,3)/(N,I,3)
+            ds_grid[:, :, i] = permutedims(B_grid .* 1000f0)   # mT
+            ds_sens[:, :, i] = permutedims(B_sens .* 1000f0)   # mT
             record!(timer, :hdf5_write, time_ns() - tw)
 
             if verbose

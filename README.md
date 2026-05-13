@@ -8,19 +8,18 @@ El repo contiene tres capas:
 
 1. **Kernel CUDA + simulación** (`B0.jl`, `kernel.jl`) — Biot-Savart sobre dipolos
    en cualquier conjunto de puntos.
-2. **Pipeline de datasets** (`generate_dataset.jl`) — perturbar geometría + correr
-   kernel + escribir HDF5 con campo en grilla 3D y en sensores. Fuente de datos
+2. **Pipeline de datasets** (`simulate.jl` + `geometry.jl`) — perturbar imanes +
+   correr kernel sobre N geometrías arbitrarias + escribir HDF5. Fuente de datos
    para entrenar redes.
 3. **Modelos de ML en Python** (`Python/Models/<NOMBRE>/`) — paquetes con
-   `data/model/train/metrics`. Notebooks homónimos en `Python/` los consumen
+   `data, model, train, metrics`. Notebooks homónimos en `Python/` los consumen
    como wrappers visuales para iterar.
 
 ---
 
 ## Convención de dimensiones
 
-Todos los archivos del pipeline (Julia y Python) usan la misma notación. Esta
-sección es la fuente de verdad — cualquier iteración nueva debe respetarla.
+Todos los archivos del pipeline (Julia y Python) usan la misma notación.
 
 ### Pipeline / dataset / red
 
@@ -32,9 +31,6 @@ sección es la fuente de verdad — cualquier iteración nueva debe respetarla.
 | `Nx,Ny,Nz` | nº de puntos por eje (grilla cartesiana)       | —               |
 | `Nr,Nθ,Nz` | nº de puntos por eje (grilla cilíndrica)       | —               |
 
-El mapeo que aprende la red v1 es **`B_sens (N, I, 3)` → `B_grid (N, J, 3)`**:
-de las mediciones en los `I` sensores, predecir el campo en los `J` puntos de la
-grilla 3D. Aplanado a la red: `(N, I·3) → (N, J·3)`.
 
 ### Kernel CUDA (genérico, no distingue sensores de grilla)
 
@@ -48,115 +44,160 @@ estás evaluando en sensores o en grilla — eso lo decide el caller.
 
 ### Ejemplos de shapes
 
-| Tensor          | Shape         | Unidades |
-|-----------------|---------------|----------|
-| `B_grid` (HDF5) | `(N, J, 3)`   | mT       |
-| `B_sens` (HDF5) | `(N, I, 3)`   | mT       |
-| Vista 3D grilla | `(N, Nx, Ny, Nz, 3)` | mT |
-| Entrada FCNN    | `(N, I·3)`    | mT       |
-| Salida  FCNN    | `(N, J·3)`    | mT       |
-
+| Tensor                    | Shape                | Unidades |
+|---------------------------|----------------------|----------|
+| `geometria/grid/B` (HDF5) | `(N, J, 3)`          | mT       |
+| `geometria/sens/B` (HDF5) | `(N, I, 3)`          | mT       |
+| Vista 3D grilla           | `(N, Nx, Ny, Nz, 3)` | mT       |
 ---
 
 ## Estructura del repo
 
 ```
 PMDKernel/
-├── B0.jl                  Pure B0(R,P,M) + helpers (cargar_imanes, construir_R)
-├── kernel.jl              CUDA kernel _Bnu! (Biot-Savart, 4× unrolled)
-├── generate_dataset.jl    Pipeline: perturb → B0(grid) + B0(sens) → HDF5
-├── run_v1_dataset.jl      Driver de ejemplo (config + call a generate_dataset)
-├── utils/
-│   ├── calibracion.jl     Constantes nominales (NOMINAL_SCALE_1/2)
-│   ├── perturb.jl         perturb(; kind, sigma_deg, ...) → (P, M) en memoria
-│   ├── sensores.jl        R_sensores() → posiciones xyz mm de los I sensores
-│   ├── timer.jl           StepTimer para benchmarks por paso
-│   ├── gru.jl             Slicer3D + mostrar_grilla (visualización)
-│   ├── bench.jl           Benchmark sintético del kernel
-│   └── disco_DEPRECATED.jl  Pipeline viejo (no extender)
-├── data/
-│   ├── B0.npz                       Geometría nominal de imanes
-│   ├── coordenadas_sensores.csv     Coordenadas (r_cm, θ°, z_cm) de los I sensores
-│   ├── datasets/                    Salida HDF5 de generate_dataset
-│   └── modelos/                     Checkpoints PyTorch (.pt)
-└── Python/
-    ├── v1_fcnn.ipynb                Wrapper visual de Models/v1_fcnn
-    └── Models/
-        └── v1_fcnn/                 Paquete: data, model, train, metrics
+├── julia/                              Lado Julia (kernel + simulación)
+│   ├── src/                            Biblioteca core
+│   │   ├── kernel.jl                   CUDA kernel _Bnu! (Biot-Savart, 4× unrolled)
+│   │   ├── B0.jl                       Pure B0(R,P,M)
+│   │   ├── geometry.jl                 struct Geometria + builders
+│   │   ├── perturb.jl                  perturb(...) → (P, M); incluye NOMINAL_SCALE_*
+│   │   ├── simulate.jl                 Pipeline: perturb → B0(g.R) por geometría → HDF5
+│   │   └── timer.jl                    StepTimer para benchmarks por paso
+│   ├── viz/
+│   │   └── gru.jl                      Slicer3D + mostrar_grilla (GLMakie)
+│   ├── bench/
+│   │   └── kernel_bench.jl             Benchmark sintético del kernel
+│   └── scripts/
+│       └── run_v1_dataset.jl           Driver de ejemplo
+│
+├── python/                             Lado Python (entrenamiento ML)
+│   ├── notebooks/
+│   │   ├── v1_fcnn.ipynb               Wrapper visual de Models/v1_fcnn
+│   │   └── v2_pinn.ipynb               Wrapper visual de Models/v2_pinn
+│   ├── Models/
+│   │   ├── v1_fcnn/                    Paquete: data, model, train, metrics
+│   │   │   └── logs/<run_tag>/         ckpt + aux.pt + csv (gitignored, autogenerado)
+│   │   ├── v2_pinn/
+│   │   │   └── logs/<run_tag>/
+│   │   └── v2_1_pinn/
+│   │       └── logs/<run_tag>/
+│   ├── train_v2_1.py                   CLI entry para v2_1_pinn
+│   └── comet_smoke_test.py
+│
+└── data/                               Inputs compartidos Julia/Python
+    ├── B0.npz                          Geometría nominal de imanes
+    ├── coordenadas_sensores.csv        Coordenadas (r_cm, θ°, z_cm) de los I sensores
+    └── datasets/                       Salida HDF5 de simular_dataset 
 ```
 
 ---
 
 ## Pipeline de generación de datasets (Julia)
 
-`generate_dataset.jl` es el entry point. Para cada muestra `n = 1..N` corre:
+`simulate.jl` es el entry point. Una geometría = un conjunto de puntos donde
+evaluar B (`struct Geometria(name, R, kind, meta)`, ver `geometry.jl`). Una
+simulación = N muestras × K geometrías. Para cada muestra `n = 1..N`:
 
 ```
-perturb(seed = seed_base + n)  →  P, M
-B0(R_grid, P, M)               →  B_grid    (J, 3)  Tesla
-B0(R_sens, P, M)               →  B_sens    (I, 3)  Tesla
-HDF5.write                     →  fila n del archivo
+perturb(seed = seed_base + n)         →  P, M
+para cada g ∈ geometrias:
+    B0(g.R, P, M)                     →  B (n.points, 3)  Tesla
+    HDF5.write geometria/<g.name>/B[n]
 ```
 
-`R_grid` y `R_sens` se calculan una sola vez al inicio (no cambian entre muestras).
+Las geometrías se construyen una sola vez al inicio (no cambian entre muestras).
 Las salidas se almacenan en mT.
 
 ### Uso básico
 
+Desde el REPL parado en `PMDKernel/`:
+
 ```julia
-include("generate_dataset.jl")
+include("julia/src/simulate.jl")
 
-config = (
-    name      = "mi_experimento",
-    n_samples = 500,
-    seed_base = 0,
-    perturb   = (kind=:both, sigma_deg=1f0,
-                 mu1=2.035f0, sigma1=0.1f0,
-                 mu2=8.48f0,  sigma2=0.85f0),
-    grid      = (coords=:cartesian, x=-100:10:100, y=-100:10:100, z=-225:10:225),
-    out_dir   = joinpath(@__DIR__, "data", "datasets"),
+geometrias = [
+    geom_grilla_xyz(:grid, -100:10:100, -100:10:100, -100:10:100),
+    geom_sensores_csv(:sens),
+]
+
+simular_dataset(
+    name        = "mi_experimento",
+    geometrias  = geometrias,
+    perturb_cfg = (kind=:both, sigma_deg=1f0,
+                   mu1=2.035f0, sigma1=0.2f0,
+                   mu2=8.48f0,  sigma2=0.85f0),
+    n_samples   = 500, seed_base = 0,
+    out_dir     = "data/datasets",
+    verbose     = true,
 )
-
-generate_dataset(config; verbose=true)
 ```
+
+O ejecutando el driver: `julia --project=.. julia/scripts/run_v1_dataset.jl`.
 
 Resultado: `data/datasets/mi_experimento.h5`.
 
-### Estructura del HDF5
+### Estructura del HDF5 (layout v2)
 
-| Dataset            | Shape          | dtype   | Unidades | Descripción                              |
-|--------------------|----------------|---------|----------|------------------------------------------|
-| `B_grid`           | `(N, J, 3)`    | float32 | mT       | Campo en cada punto de la grilla         |
-| `B_sens`           | `(N, I, 3)`    | float32 | mT       | Campo en cada sensor                     |
-| `R_grid_xyz_mm`    | `(J, 3)`       | float32 | mm       | Posiciones xyz de los puntos de grilla   |
-| `sens_xyz_mm`      | `(I, 3)`       | float32 | mm       | Posiciones xyz de los sensores           |
-| `grid_x/y/z`       | `(Nx,)` etc.   | float32 | mm       | Ejes del meshgrid (uno por dimensión)    |
+```
+mi_experimento.h5
+├── geometria/
+│   ├── grid/
+│   │   ├── B          (N, J, 3)    Float32  mT
+│   │   ├── R          (J, 3)       Float32  mm
+│   │   ├── meta/
+│   │   │   ├── x      (Nx,)        Float32  mm
+│   │   │   ├── y      (Ny,)
+│   │   │   └── z      (Nz,)
+│   │   └── attrs: { kind = "cartesian" }
+│   └── sens/
+│       ├── B          (N, I, 3)    Float32  mT
+│       ├── R          (I, 3)       Float32  mm
+│       ├── meta/      (path del CSV como attr)
+│       └── attrs: { kind = "sensor_csv" }
+└── attrs:
+    n_samples, seed_base, perturb_<k>, t_<step>_mean_ms / t_<step>_std_ms / t_<step>_total_s
+```
 
-**Layout de aplanamiento de la grilla:** orden x-outer, z-inner (loop Julia
+**Aplanamiento del grid cartesiano:** orden x-outer, z-inner (loop Julia
 `for xi in x, yi in y, zi in z`). En NumPy:
-`B_grid.reshape(N, Nx, Ny, Nz, 3)` con C-order. Verificable contra
-`np.meshgrid(grid_x, grid_y, grid_z, indexing="ij")` (lo hace el loader del
-notebook).
+`f["geometria/grid/B"].reshape(N, Nx, Ny, Nz, 3)` con C-order. Verificable contra
+`np.meshgrid(grid_x, grid_y, grid_z, indexing="ij")` (lo hace el loader).
 
-**Atributos del archivo:** `kind`, `sigma_deg`, `mu1/2`, `sigma1/2`, `n_samples`,
-`seed_base`, `grid_coords`, más resumen de tiempos (`<paso>_mean_ms`, `_total_s`,
-etc.) generado por `StepTimer`.
+**Convención del meta::Dict** según `kind`:
+- `:cartesian`   → `meta/x`, `meta/y`, `meta/z` (Vector{Float32}).
+- `:cylindrical` → `meta/r`, `meta/theta`, `meta/z`.
+- `:sensor_csv`  → `path` (attr String).
+- `:custom`      → libre.
 
 ### Variantes
 
 ```julia
-# Solo benchmark, sin escribir HDF5 (estima cuánto tarda el experimento real):
-benchmark_dataset(config; warmup=2)
+# Benchmark sin escribir HDF5 (estima cuánto tarda el experimento real):
+benchmark_dataset(; geometrias, perturb_cfg, n_samples=10, seed_base=0, warmup=2)
 
 # Particionar en múltiples archivos (resumible si se cae):
-generate_dataset_chunked(config; n_total=10_000, chunk_size=1_000)
+simular_dataset_chunked(
+    name = "mi_experimento", geometrias = geometrias,
+    perturb_cfg = ..., n_total = 10_000, chunk_size = 1_000,
+    seed_base = 0, out_dir = "data/datasets",
+)
 # → mi_experimento_part01.h5 .. _part10.h5
 ```
 
-### Grillas no cartesianas
+Si un chunk se cae, volver a correr la misma llamada retoma desde donde quedó:
+`skip_existing = true` (default) saltea cualquier `<name>_part<NN>.h5` ya escrito.
+Para forzar la regeneración de un chunk, borrar el archivo correspondiente o
+pasar `skip_existing = false`.
+
+### Grillas no cartesianas / geometrías arbitrarias
 
 ```julia
-grid = (coords=:cylindrical, r=0:5:160, theta=0:10:350, z=-60:5:60)
+# Cilíndrica
+geom_grilla_cilindrica(:cyl, 0:5:160, 0:10:350, -60:5:60)
+
+# Lista de puntos arbitraria (línea, esfera, nube custom...)
+puntos = [...] :: Matrix{Float32}    # (n, 3) xyz mm
+geom_puntos(:linea_x, puntos)
 ```
 
 ---
@@ -207,19 +248,6 @@ Iteración anterior (`v1_fcnn`) abandonada: era un mapeo `B_sens (540) →
 B_grid_aplanada (60.858)` puramente data-driven (MSE solo), con ~63M params.
 La arquitectura de v2 es ~225× más chica y aprende un campo continuo.
 
----
-
-## Cómputo: local vs cluster
-
-- **Local (PC del usuario, Windows):** smoke tests del pipeline con datasets
-  chicos (N=500–5k). Iteración rápida en notebook.
-- **Cluster HPC universitario (Linux, headless, SSH):** entrenamiento real con
-  N=100k+. Sólo scripts, no notebooks.
-
-El código se escribe pensando en escalar desde el día 1: paths cross-OS, lazy
-loading cuando aplique, y cualquier `train.py` debería ser ejecutable también
-como `python -m Models.v<…>.train --config …` (a definir cuando llegue el
-momento).
 
 ---
 
@@ -232,8 +260,7 @@ momento).
 | `M`   | `[3,m]` | column-major | A·m²     | Momentos magnéticos    |
 | `B`   | `[n,3]` | row-major    | T        | Campo de salida        |
 
-La asimetría row/column-major es intencional: garantiza accesos coalescentes en
-GPU. El kernel usa unrolling de 4 dipolos por iteración (sin shared-memory
+La asimetría row/column-major es intencional. El kernel usa unrolling de 4 dipolos por iteración (sin shared-memory
 tiling). `B0.jl` convierte mm → m internamente — la API de usuario es siempre mm.
 
 `R` puede ser cualquier conjunto de puntos: `R = R_grid` (para evaluar el
@@ -244,30 +271,17 @@ distingue.
 
 Las contribuciones cerca de los dipolos pueden divergir (`1/r³`); el kernel
 clampea la magnitud de salida a `B_MAX_T = 0.06 T` (60 mT) preservando dirección.
-La guarda interna es `r² > 1e-18`.
+La guarda interna es `r² > 1e-8` m² (equivalente a `r > 0.1 mm`): cualquier pareja
+punto-dipolo a menos de 0.1 mm aporta 0 a la suma. Es un cutoff físico, no sólo
+un epsilon numérico — a escalas menores el modelo dipolar puntual deja de
+describir al imán real, así que descartar esas contribuciones es más razonable
+que extrapolar la singularidad.
 
 ---
 
 ## Convención del eje X
 
-El proyecto usa `+x` creciendo de **derecha a izquierda** en el resonador
-(convención del hardware del OSI² OpenMRI). En coordenadas cilíndricas:
-`x = -r·sin(θ)`, `y = r·cos(θ)`. Plots XY deben invertir el eje X (`ax.invert_xaxis()`)
+El proyecto usa `+x` creciendo de **derecha a izquierda** `+y` creciendo de **suelo a techo**. Plots XY deben invertir el eje X (`ax.invert_xaxis()`)
 para respetar la orientación física.
 
 ---
-
-## Calibración
-
-`utils/calibracion.jl` define las constantes nominales:
-
-| Constante           | Valor   | Aplica a                |
-|---------------------|---------|-------------------------|
-| `NOMINAL_SCALE_1`   | 2.035f0 | array2 (1936 imanes)    |
-| `NOMINAL_SCALE_2`   | 8.48f0  | array4 (384 imanes)     |
-
-`cargar_imanes(; raw=true)` (en `B0.jl`) aplica estas escalas al leer el NPZ.
-`perturb` recibe medias `mu1/mu2` que típicamente coinciden con estas constantes
-(perturbación con baseline calibrado) o las sustituye (estudio de sensibilidad).
-**No duplicar estas constantes en otros archivos** — importar siempre desde
-`utils/calibracion.jl`.

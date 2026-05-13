@@ -5,7 +5,7 @@ using Printf
     StepTimer()
 
 Acumulador de tiempos por paso. Se usa para medir cuánto tarda cada
-fase de un pipeline iterativo (ej. `generate_dataset`).
+fase de un pipeline iterativo (ej. `simular_dataset`).
 
 Internamente: `Dict{Symbol, Vector{Float64}}` con tiempos en segundos.
 """
@@ -60,14 +60,17 @@ end
 """
     summary_attrs(timer) -> Dict{String, Float64}
 
-Devuelve un Dict con `t_<step>_mean_ms`, `t_<step>_total_s` por paso,
-listo para guardar como `attrs` de un archivo HDF5.
+Devuelve un Dict con `t_<step>_mean_ms`, `t_<step>_std_ms`, `t_<step>_total_s`
+por paso, listo para guardar como `attrs` de un archivo HDF5. Para pasos con
+una sola medición, `std_ms = 0`.
 """
 function summary_attrs(t::StepTimer)
     out = Dict{String, Float64}()
     for (step, times) in t.times
-        s = String(step)
-        out["t_$(s)_mean_ms"]  = mean(times) * 1000
+        s  = String(step)
+        ms = times .* 1000
+        out["t_$(s)_mean_ms"]  = mean(ms)
+        out["t_$(s)_std_ms"]   = length(ms) > 1 ? std(ms) : 0.0
         out["t_$(s)_total_s"]  = sum(times)
     end
     return out

@@ -6,7 +6,7 @@ using LinearAlgebra
 # dirección. 60 mT = 0.06 T.
 const B_MAX_T = 0.06f0
 
-# μ₀ / 4π en SI (T·m/A)
+# μ0 / 4π en SI (T·m/A)
 const SCALE = 1.0f-7
 
 function _Bnu!(R, P, M, B, n, m)
@@ -45,7 +45,7 @@ function _Bnu!(R, P, M, B, n, m)
             dx4, dy4, dz4 = Rx - px4, Ry - py4, Rz - pz4
             r2_4 = dx4*dx4 + dy4*dy4 + dz4*dz4
 
-            if r2_1 > 1.0f-18
+            if r2_1 > 1.0f-8
                 inv_r  = CUDA.rsqrt(r2_1)
                 inv_r2 = inv_r * inv_r
                 inv_r3 = inv_r2 * inv_r
@@ -55,7 +55,7 @@ function _Bnu!(R, P, M, B, n, m)
                 By += 3.0f0 * dot_mr * dy1 * inv_r5 - μy1 * inv_r3
                 Bz += 3.0f0 * dot_mr * dz1 * inv_r5 - μz1 * inv_r3
             end
-            if r2_2 > 1.0f-18
+            if r2_2 > 1.0f-8
                 inv_r  = CUDA.rsqrt(r2_2)
                 inv_r2 = inv_r * inv_r
                 inv_r3 = inv_r2 * inv_r
@@ -65,7 +65,7 @@ function _Bnu!(R, P, M, B, n, m)
                 By += 3.0f0 * dot_mr * dy2 * inv_r5 - μy2 * inv_r3
                 Bz += 3.0f0 * dot_mr * dz2 * inv_r5 - μz2 * inv_r3
             end
-            if r2_3 > 1.0f-18
+            if r2_3 > 1.0f-8
                 inv_r  = CUDA.rsqrt(r2_3)
                 inv_r2 = inv_r * inv_r
                 inv_r3 = inv_r2 * inv_r
@@ -75,7 +75,7 @@ function _Bnu!(R, P, M, B, n, m)
                 By += 3.0f0 * dot_mr * dy3 * inv_r5 - μy3 * inv_r3
                 Bz += 3.0f0 * dot_mr * dz3 * inv_r5 - μz3 * inv_r3
             end
-            if r2_4 > 1.0f-18
+            if r2_4 > 1.0f-8
                 inv_r  = CUDA.rsqrt(r2_4)
                 inv_r2 = inv_r * inv_r
                 inv_r3 = inv_r2 * inv_r
@@ -96,7 +96,7 @@ function _Bnu!(R, P, M, B, n, m)
             dx, dy, dz = Rx - px, Ry - py, Rz - pz
             r2 = dx*dx + dy*dy + dz*dz
 
-            if r2 > 1.0f-18
+            if r2 > 1.0f-8
                 inv_r  = CUDA.rsqrt(r2)
                 inv_r2 = inv_r * inv_r
                 inv_r3 = inv_r2 * inv_r

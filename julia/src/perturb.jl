@@ -2,7 +2,8 @@ using NPZ
 using Distributions
 using Random
 
-isdefined(@__MODULE__, :NOMINAL_SCALE_1) || include("calibracion.jl")
+const NOMINAL_SCALE_1 = 2.035f0   # array2 (1936 imanes)
+const NOMINAL_SCALE_2 = 8.48f0    # array4 (384 imanes)
 
 # --- Helpers internos ---
 
@@ -42,7 +43,7 @@ Parámetros
 - `mu2,sigma2` : media y sigma para la magnitud del array4 (default = 8.48 ± 0.85)
 - `seed`       : semilla RNG (default = nothing → aleatorio)
 
-No escribe archivos. El loop sobre N seeds vive en `generate_dataset`.
+No escribe archivos. El loop sobre N seeds vive en `simular_dataset`.
 """
 function perturb(; kind::Symbol     = :both,
         sigma_deg::Float32 = 1f0,
@@ -54,7 +55,7 @@ function perturb(; kind::Symbol     = :both,
         error("kind debe ser :rotation, :magnitude o :both; recibido $(kind)")
 
     rng  = seed === nothing ? Random.default_rng() : MersenneTwister(seed)
-    data = npzread(joinpath(@__DIR__, "..", "data", "B0.npz"))
+    data = npzread(joinpath(@__DIR__, "..", "..", "data", "B0.npz"))
     pos1 = Float32.(data["array1"]); pos2 = Float32.(data["array3"])
     mom1 = Float32.(data["array2"]) .* NOMINAL_SCALE_1
     mom2 = Float32.(data["array4"]) .* NOMINAL_SCALE_2

@@ -26,8 +26,10 @@ nvidia-smi
 
 echo "=== TRAIN ==="
 python python/train_v4.py \
-    --h5 data/datasets/v1_xyz100_step10_n5000.h5 \
-    --run-tag v4_deepsets_cube_n5000 \
+    --h5 data/datasets/v2_xyz100_step50_n5000.h5 \
+    --run-tag v4_deepsets_v2_n5000 \
+    --epochs 100 \
+    --patience 20 \
     --comet-project pmdkernel \
     --num-workers 4 \
     --pin-memory

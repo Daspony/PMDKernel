@@ -98,13 +98,17 @@ def main():
     torch.set_float32_matmul_precision(args.matmul_precision)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    print_banner("HPARAMS")
-    for k, v in sorted(vars(args).items()):
-        print(f"{k:20s}: {v}")
-
     print_banner("DATASET")
     ds = data.load_dataset_metadata(args.h5)
     print(f"N={ds['N']}  I={ds['I']}  J={ds['J']}  ({ds['Nx']}x{ds['Ny']}x{ds['Nz']})")
+
+    if args.points_per_sample > ds["J"]:
+        print(f"[auto] points-per-sample {args.points_per_sample} > J={ds['J']}, clamping to J")
+        args.points_per_sample = ds["J"]
+
+    print_banner("HPARAMS")
+    for k, v in sorted(vars(args).items()):
+        print(f"{k:20s}: {v}")
 
     print_banner("SPLIT + STATS")
     splits = data.split_indices(ds["N"], val_frac=args.val_frac,

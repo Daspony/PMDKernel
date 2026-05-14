@@ -82,27 +82,6 @@ cd PMDKernel
 
 ---
 
-## 6. Subir el dataset por scp
-
-Los `.h5` no van por git. Desde **tu máquina local** (no desde el cluster):
-
-```powershell
-# Windows PowerShell (desde C:\Users\Poney\Desktop\Ipre\PMDKernel)
-scp data/datasets/v3_xyz100_step50_n100k.h5 `
-    <tu-usuario>@cluster.ing.uc.cl:~/IPRE/PMDKernel/data/datasets/
-```
-
-Antes asegurate que la carpeta destino existe:
-
-```bash
-ssh <tu-usuario>@cluster.ing.uc.cl 'mkdir -p ~/IPRE/PMDKernel/data/datasets'
-```
-
-Un `.h5` de 100k muestras ronda decenas de GB — la cuota recomendada es 100 GB.
-Si se acerca, borrar datasets viejos o pedir cuota a `7500@uc.cl`.
-
----
-
 ## 7. submit.sh
 
 Crear `submit.sh` en la raíz del repo (`~/IPRE/PMDKernel/submit.sh`):
@@ -131,8 +110,8 @@ nvidia-smi
 
 echo "=== TRAIN ==="
 python python/train_v5.py \
-    --h5 data/datasets/v3_xyz100_step50_n100k.h5 \
-    --run-tag v5_pinn_n100k \
+    --h5 data/datasets/v2_xyz100_step50_n5000.h5 \
+    --run-tag v5_pinn_n5000 \
     --epochs 100 \
     --patience 10 \
     --batch-size 32 \

@@ -20,7 +20,8 @@ def train(lit_model, loader_tr, loader_va, *,
           deterministic=True,
           gradient_clip_val=None,
           comet_project="pmdkernel",
-          log_every_n_steps=50):
+          log_every_n_steps=50,
+          enable_progress_bar=True):
     early_stop = EarlyStopping(monitor="val_loss", patience=patience, mode="min")
     ckpt = ModelCheckpoint(
         dirpath=str(ckpt_dir),
@@ -28,7 +29,7 @@ def train(lit_model, loader_tr, loader_va, *,
         monitor="val_loss",
         mode="min",
         save_top_k=1,
-        save_last=False,
+        save_last=True,
     )
     logger = CometLogger(project=comet_project, name=run_tag)
     logger.experiment.add_tags(["v5_deepsets_pinn", "physics", "div_curl"])
@@ -42,6 +43,7 @@ def train(lit_model, loader_tr, loader_va, *,
         log_every_n_steps=log_every_n_steps,
         deterministic=deterministic,
         gradient_clip_val=gradient_clip_val,
+        enable_progress_bar=enable_progress_bar,
     )
     trainer.fit(lit_model, loader_tr, loader_va)
     return trainer

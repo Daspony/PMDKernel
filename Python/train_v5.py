@@ -1,14 +1,18 @@
-"""Script CLI para entrenar v4_deepsets (DeepSets + relative coords, By-only).
+"""Script CLI para entrenar v5_deepsets_pinn (DeepSets + Maxwell losses).
 
-Comparación apples-to-apples con v3_pwnn — mismo dataset, mismo split, mismo
-target (By), mismo loss (MSE). Lo único que cambia es la arquitectura.
+Diferencias con `train_v4.py`:
+- Target full B = (Bx, By, Bz) — la red predice las 3 componentes.
+- Loss total = MSE_data + λ_div · div² + λ_curl · |curl|².
+- Defaults `--lambda-div 1e-3 --lambda-curl 1e-3` (recomendados por el doc;
+  subirlos gradualmente si las losses físicas siguen lejos de cero).
 
 Uso típico:
 
-    python python/train_v4.py \\
+    python python/train_v5.py \\
         --h5 data/datasets/v1_xy100_z225_step10_n5000.h5 \\
-        --epochs 100 \\
-        --run-tag v4_deepsets_n5000
+        --epochs 200 \\
+        --lambda-div 1e-3 --lambda-curl 1e-3 \\
+        --run-tag v5_pinn_n5000
 """
 import argparse
 import json
@@ -26,14 +30,14 @@ import numpy as np
 import torch
 import pytorch_lightning as pl
 
-from Models.v4_deepsets import data
-from Models.v4_deepsets.model import LitDeepSet, count_params
-from Models.v4_deepsets.train import train as fit_model
-from Models.v4_deepsets.metrics import evaluate, report
+from Models.v5_deepsets_pinn import data
+from Models.v5_deepsets_pinn.model import LitDeepSetPINN, count_params
+from Models.v5_deepsets_pinn.train import train as fit_model
+from Models.v5_deepsets_pinn.metrics import evaluate, report
 
 
 def build_parser():
-    p = argparse.ArgumentParser(description="Train v4_deepsets (DeepSets, By-only).")
+    p = argparse.ArgumentParser(description="Train v5_deepsets_pinn (DeepSets + gradiente del campo magnético + rotacional campo magentico).")
     p.add_argument("--h5", type=Path, required=True)
     p.add_argument("--ckpt-dir", type=Path, default=None)
     p.add_argument("--run-tag",  type=str,  default=None)
@@ -42,25 +46,28 @@ def build_parser():
     p.add_argument("--test-frac", type=float, default=0.15)
     p.add_argument("--seed",      type=int,   default=42)
 
-    # DeepSets arch
     p.add_argument("--encoder-hidden", type=int, nargs="+", default=[64, 64])
     p.add_argument("--decoder-hidden", type=int, nargs="+", default=[128, 64])
     p.add_argument("--embed-dim",      type=int, default=128)
-    p.add_argument("--activation",     type=str, default="relu",
+    p.add_argument("--activation",     type=str, default="silu",
                    choices=["silu", "gelu", "relu", "tanh"])
 
-    p.add_argument("--lr",            type=float, default=1e-3)
-    p.add_argument("--weight-decay",  type=float, default=1e-5)
-    p.add_argument("--epochs",        type=int,   default=100)
-    p.add_argument("--patience",      type=int,   default=20)
-    p.add_argument("--grad-clip",     type=float, default=None)
+    p.add_argument("--lr",           type=float, default=1e-3)
+    p.add_argument("--weight-decay", type=float, default=1e-5)
+    p.add_argument("--epochs",       type=int,   default=100)
+    p.add_argument("--patience",     type=int,   default=20)
+    p.add_argument("--grad-clip",    type=float, default=None)
+
+    # Physics losses
+    p.add_argument("--lambda-div",  type=float, default=1e-3,
+                   help="Peso de la loss de divergencia (∇·B = 0). Subir gradualmente.")
+    p.add_argument("--lambda-curl", type=float, default=1e-3,
+                   help="Peso de la loss de rotor (∇×B = 0). Subir gradualmente.")
 
     p.add_argument("--points-per-sample", type=int, default=4096)
-    p.add_argument("--batch-size",        type=int, default=32)
-    p.add_argument("--precision",         type=str, default="16-mixed",
-                   choices=["32-true", "16-mixed", "bf16-mixed"])
-    p.add_argument("--data-device",       type=str, default=None,
-                   choices=["cpu", "cuda"])
+    p.add_argument("--batch-size",        type=int, default=1,
+                   help="Samples (magnet configs) por step. Por step procesa B*K items point-wise.")
+    p.add_argument("--data-device",       type=str, default=None, choices=["cpu", "cuda"])
     p.add_argument("--num-workers",       type=int, default=0)
     p.add_argument("--pin-memory",        action="store_true")
 
@@ -88,9 +95,9 @@ def main():
         print("[quick mode] epochs=3, patience=2")
 
     if args.run_tag is None:
-        args.run_tag = f"v4_deepsets_{args.h5.stem}"
+        args.run_tag = f"v5_pinn_{args.h5.stem}"
     if args.ckpt_dir is None:
-        args.ckpt_dir = SCRIPT_DIR / "Models" / "v4_deepsets" / "logs" / args.run_tag
+        args.ckpt_dir = SCRIPT_DIR / "Models" / "v5_deepsets_pinn" / "logs" / args.run_tag
     args.ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     if args.data_device is None:
@@ -120,10 +127,13 @@ def main():
     t0 = time.time()
     stats = data.compute_train_stats(args.h5, splits["train"], chunk=64, seed=args.seed)
     print(f"compute_train_stats: {time.time() - t0:.1f}s")
-    b_mean, b_std         = stats["b_mean"], stats["b_std"]
-    feat_mean, feat_std   = stats["feat_mean"], stats["feat_std"]
-    sensor_xyz            = stats["sensor_xyz"]
-    print(f"b_mean    = {b_mean:.6e}    b_std    = {b_std:.6e}")
+
+    b_mean, b_std       = stats["b_mean"], stats["b_std"]                  # (3,) cada uno
+    feat_mean, feat_std = stats["feat_mean"], stats["feat_std"]
+    sensor_xyz          = stats["sensor_xyz"]
+    
+    print(f"b_mean    = {b_mean}")
+    print(f"b_std     = {b_std}")
     print(f"feat_mean = {feat_mean}")
     print(f"feat_std  = {feat_std}")
 
@@ -140,13 +150,14 @@ def main():
     print(f"loaders ready: {time.time() - t0:.1f}s")
 
     print_banner("MODEL")
-    lit_model = LitDeepSet(
+    lit_model = LitDeepSetPINN(
         n_sensors=ds["I"], sensor_xyz=sensor_xyz,
         encoder_hidden=args.encoder_hidden, embed_dim=args.embed_dim,
         decoder_hidden=args.decoder_hidden, activation=args.activation,
         lr=args.lr, weight_decay=args.weight_decay,
-        b_mean=b_mean, b_std=b_std,
+        b_mean=tuple(b_mean.tolist()), b_std=tuple(b_std.tolist()),
         feat_mean=tuple(feat_mean.tolist()), feat_std=tuple(feat_std.tolist()),
+        lambda_div=args.lambda_div, lambda_curl=args.lambda_curl,
     )
     print(f"params (trainable): {count_params(lit_model):,}")
 
@@ -157,7 +168,6 @@ def main():
         n_epochs=args.epochs, patience=args.patience,
         ckpt_dir=args.ckpt_dir, run_tag=args.run_tag,
         gradient_clip_val=args.grad_clip,
-        precision=args.precision,
         comet_project=args.comet_project,
         log_every_n_steps=args.log_every_n,
         enable_progress_bar=not args.no_progress,
@@ -171,10 +181,10 @@ def main():
     print(f"comet url    : {comet_url}")
 
     print_banner("EVAL")
-    lit_model = LitDeepSet.load_from_checkpoint(best_ckpt_path, weights_only=False)
-    m_tr = evaluate(lit_model, args.h5, splits["train"], device)
-    m_va = evaluate(lit_model, args.h5, splits["val"],   device)
-    m_te = evaluate(lit_model, args.h5, splits["test"],  device)
+    lit_model = LitDeepSetPINN.load_from_checkpoint(best_ckpt_path, weights_only=False)
+    m_tr = evaluate(lit_model, args.h5, splits["train"], device, rmse_per_component=True)
+    m_va = evaluate(lit_model, args.h5, splits["val"],   device, rmse_per_component=True)
+    m_te = evaluate(lit_model, args.h5, splits["test"],  device, rmse_per_component=True)
     report("train", m_tr)
     report("val",   m_va)
     report("test",  m_te)
@@ -182,8 +192,8 @@ def main():
     print_banner("SAVE AUX")
     aux_path = args.ckpt_dir / f"{args.run_tag}_aux.pt"
     torch.save({
-        "b_mean":     float(b_mean),
-        "b_std":      float(b_std),
+        "b_mean":     np.asarray(b_mean,   dtype=np.float32),
+        "b_std":      np.asarray(b_std,    dtype=np.float32),
         "feat_mean":  np.asarray(feat_mean, dtype=np.float32),
         "feat_std":   np.asarray(feat_std,  dtype=np.float32),
         "sensor_xyz": np.asarray(sensor_xyz, dtype=np.float32),

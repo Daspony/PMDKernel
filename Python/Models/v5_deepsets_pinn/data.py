@@ -140,12 +140,14 @@ class PointDataset(Dataset):
 
     def __init__(self, h5_path, sample_indices, *,
                  points_per_sample,
+                 batch_size=1,
                  b_mean, b_std,
                  data_device="cpu", seed=0):
-        self.K         = int(points_per_sample)
-        self.device    = torch.device(data_device)
-        self.base_seed = int(seed)
-        self._gen      = torch.Generator(device=self.device).manual_seed(self.base_seed)
+        self.K          = int(points_per_sample)
+        self.batch_size = int(batch_size)
+        self.device     = torch.device(data_device)
+        self.base_seed  = int(seed)
+        self._gen       = torch.Generator(device=self.device).manual_seed(self.base_seed)
 
         b_mean_a = np.asarray(b_mean, dtype=np.float32).reshape(3)
         b_std_a  = np.asarray(b_std,  dtype=np.float32).reshape(3)
@@ -163,28 +165,53 @@ class PointDataset(Dataset):
         self.R_grid     = torch.from_numpy(R_grid_arr).to(self.device)                  # (J, 3) raw
         self.J = self.R_grid.shape[0]
         self.I = self.B_sens.shape[1]
+        self.N = self.B_sens.shape[0]
 
     def __len__(self):
-        return self.B_sens.shape[0]
+        return (self.N + self.batch_size - 1) // self.batch_size
 
-    def __getitem__(self, k):
-        sensors = self.B_sens[k]                                                        # (I,)
+    def __getitem__(self, batch_idx):
+        start = batch_idx * self.batch_size
+        end   = min(start + self.batch_size, self.N)
+        B     = end - start
         K_eff = min(self.K, self.J)
-        point_idx = torch.randperm(self.J, generator=self._gen,
-                                   device=self.device)[:K_eff]
-        query_xyz   = self.R_grid[point_idx]                                            # (K, 3) raw mm
-        b_target    = self.B_grid_n[k, point_idx]                                       # (K, 3) normalizado
-        sensors_rep = sensors.unsqueeze(0).expand(K_eff, -1).contiguous()              # (K, I)
-        return sensors_rep, query_xyz, b_target
+
+        sample_idx = torch.arange(start, end, device=self.device)             # (B,)
+        point_idx  = torch.stack([
+            torch.randperm(self.J, generator=self._gen, device=self.device)[:K_eff]
+            for _ in range(B)
+        ])                                                                    # (B, K_eff)
+
+        sensors   = self.B_sens[sample_idx]                                   # (B, I)
+        query_xyz = self.R_grid[point_idx]                                    # (B, K_eff, 3)
+
+        # Gather de B_grid_n: shape (n, J, 3) → (B, K_eff, 3)
+        B_sel = self.B_grid_n[sample_idx]                                     # (B, J, 3)
+        b_idx = torch.arange(B, device=self.device).unsqueeze(1).expand(B, K_eff)
+        b_target = B_sel[b_idx, point_idx]                                    # (B, K_eff, 3)
+
+        sensors_rep = sensors.unsqueeze(1).expand(-1, K_eff, -1)              # (B, K_eff, I)
+
+        # Aplanar batch y K → (B*K, ...). El modelo es point-wise: cada item
+        # tiene su propio (sensors_by, query_xyz) y por lo tanto su propio
+        # residuo físico independiente (ver model.py:_step).
+        BK = B * K_eff
+        return (
+            sensors_rep.reshape(BK, -1).contiguous(),                          # (B*K, I)
+            query_xyz.reshape(BK, 3),                                          # (B*K, 3)
+            b_target.reshape(BK, 3),                                           # (B*K, 3)
+        )
 
 
 def make_loader(h5_path, sample_indices, *,
                 points_per_sample, shuffle,
                 b_mean, b_std,
+                batch_size=1,
                 data_device="cpu",
                 num_workers=0, pin_memory=False, seed=0):
     ds = PointDataset(h5_path, sample_indices,
                       points_per_sample=points_per_sample,
+                      batch_size=batch_size,
                       b_mean=b_mean, b_std=b_std,
                       data_device=data_device, seed=seed)
     if torch.device(data_device).type == "cuda":

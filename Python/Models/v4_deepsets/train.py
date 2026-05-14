@@ -11,7 +11,8 @@ def train(lit_model, loader_tr, loader_va, *,
           gradient_clip_val=None,
           precision="16-mixed",
           comet_project="pmdkernel",
-          log_every_n_steps=50):
+          log_every_n_steps=50,
+          enable_progress_bar=True):
     early_stop = EarlyStopping(monitor="val_loss", patience=patience, mode="min")
     ckpt = ModelCheckpoint(
         dirpath=str(ckpt_dir),
@@ -34,6 +35,7 @@ def train(lit_model, loader_tr, loader_va, *,
         deterministic=deterministic,
         gradient_clip_val=gradient_clip_val,
         precision=precision,
+        enable_progress_bar=enable_progress_bar,
     )
     trainer.fit(lit_model, loader_tr, loader_va)
     return trainer
